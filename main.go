@@ -10,12 +10,13 @@ import (
 	"time"
 )
 
-var q IQueue
+var queueList map[string]IQueue
 var listener IListener
 
 func main() {
+	queueList = make(map[string]IQueue)
+	GetListener()
 	// just create queue
-	GetQueue()
 	http.HandleFunc("/", handleRequest)
 	err := http.ListenAndServe(":7000", nil)
 	if err != nil {
@@ -27,11 +28,11 @@ func main() {
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "PUT" {
 		addQueue(w, r)
-		fmt.Println(GetQueue().List())
+		fmt.Println(queueList)
 		return
 	} else if r.Method == "GET" {
 		getQueue(w, r)
-		fmt.Println(GetQueue().List())
+		fmt.Println(queueList)
 		return
 	}
 	w.WriteHeader(http.StatusBadRequest)
@@ -50,10 +51,12 @@ func addQueue(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	q := GetQueue()
-	q.Add(queueName, queueValue)
+	q := GetQueue(queueName)
+	if GetListener().Notify(queueName, queueValue) {
+		return
+	}
 
-	io.WriteString(w, "this is put: queue:"+r.URL.Path+" value:"+queueValue+";")
+	q.Add(queueValue)
 }
 
 func getQueue(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +75,7 @@ func getQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dTimeout := time.Duration(timeout)
-	queueValue := GetQueue().Get(queueName)
+	queueValue := GetQueue(queueName).Pop()
 	if queueValue == "" && timeout == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -102,67 +105,47 @@ func getQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func getQueueNameFromRequest(r *http.Request) string {
-	if len(r.URL.Path) > 0 && r.URL.Path[:1] == "/" {
-		return r.URL.Path[1:]
-	}
-	return r.URL.Path
+	return r.URL.Path[1:]
 }
 
 // queue implementation
 
 type IQueue interface {
-	Add(queueName string, queueValue string)
-	Get(queueName string) string
-	List() map[string][]string
+	Add(queueValue string)
+	Pop() string
 }
 
 type Queue struct {
-	list map[string][]string
+	list []string
 	m    sync.Mutex
 }
 
-func (q *Queue) Add(queueName string, queueValue string) {
+func (q *Queue) Add(queueValue string) {
 	q.m.Lock()
 	defer q.m.Unlock()
-	var v []string
-	v, ex := q.list[queueName]
-	if !ex {
-		v = []string{}
-	}
-	// breaks solid (
-	if GetListener().Notify(queueName, queueValue) {
-		return
-	}
-	v = append(v, queueValue)
-	q.list[queueName] = v
+
+	q.list = append(q.list, queueValue)
 }
 
-func (q *Queue) Get(queueName string) string {
+func (q *Queue) Pop() string {
 	q.m.Lock()
 	defer q.m.Unlock()
-	v, ex := q.list[queueName]
-	if !ex {
+	if len(q.list) == 0 {
 		return ""
 	}
-	itemCount := len(v)
-	if itemCount == 0 {
-		return ""
-	}
-	l := v[1:]
-	q.list[queueName] = l
-	return v[0]
+	list := q.list
+	q.list = q.list[1:]
+	return list[0]
 }
 
-func (q *Queue) List() map[string][]string {
-	return q.list
-}
-
-func GetQueue() IQueue {
-	if q == nil {
-		q = &Queue{list: make(map[string][]string)}
+func GetQueue(queueName string) IQueue {
+	v, err := queueList[queueName]
+	if !err {
+		v = &Queue{list: []string{}}
+		queueList[queueName] = v
 	}
-	GetListener()
-	return q
+	fmt.Println("test", v, err)
+	return v
 }
 
 // listener implementation
